@@ -1,0 +1,15 @@
+﻿Версия SQLite: 3.45.1
+Режимы вывода данных (sqlite3 .mode):
+box
+csv
+column
+html
+insert
+json
+line
+list
+markdown
+qbox
+quote
+table
+tabs
