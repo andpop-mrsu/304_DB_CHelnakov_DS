@@ -1,139 +1,147 @@
+import csv
 import os
-import time
+import re
 
+BATCH = 1000
+OUT = "db_init.sql"
 DATASET_DIR = "dataset"
-OUTPUT_SQL = "db_init.sql"
-
-# Описание структуры таблиц и соответствующих файлов исходных данных
-TABLES_CONFIG = {
-    "movies": {
-        "filename": "movies.csv",  # или movies.txt в зависимости от расширения
-        "create_sql": """
-CREATE TABLE movies (
-    id INTEGER PRIMARY KEY,
-    title TEXT,
-    year INTEGER,
-    genres TEXT
-);
-"""
-    },
-    "ratings": {
-        "filename": "ratings.csv",
-        "create_sql": """
-CREATE TABLE ratings (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER,
-    movie_id INTEGER,
-    rating REAL,
-    timestamp INTEGER
-);
-"""
-    },
-    "tags": {
-        "filename": "tags.csv",
-        "create_sql": """
-CREATE TABLE tags (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER,
-    movie_id INTEGER,
-    tag TEXT,
-    timestamp INTEGER
-);
-"""
-    },
-    "users": {
-        "filename": "users.csv",
-        "create_sql": """
-CREATE TABLE users (
-    id INTEGER PRIMARY KEY,
-    name TEXT,
-    email TEXT,
-    gender TEXT,
-    register_date TEXT,
-    occupation TEXT
-);
-"""
-    }
-}
 
 
-def escape_sql(val):
-    if val is None:
+def esc(s):
+    if s is None:
         return "NULL"
-    if isinstance(val, (int, float)):
-        return str(val)
-    # Экранирование одинарных кавычек для SQL
-    return f"'{str(val).replace("'", "''")}'"
+    return "'" + str(s).replace("'", "''") + "'"
 
 
-def find_file(directory, base_name):
-    """Ищет файл с именем base_name, возможно с другим расширением (.csv, .txt, .tsv)."""
-    if not os.path.exists(directory):
-        return None
-    for f in os.listdir(directory):
-        if f.lower().startswith(base_name.lower()):
-            return os.path.join(directory, f)
-    return None
+def val(v):
+    if v is None:
+        return "NULL"
+    return str(v)
 
 
-def generate_sql():
-    start_time = time.time()
+def write_table(f, name, columns, rows):
+    col_names = ", ".join(c[0] for c in columns)
+    cols_sql = ", ".join(f"{c[0]} {c[1]}" for c in columns)
 
-    sql_lines = [
-        "PRAGMA foreign_keys = OFF;",
-        "BEGIN TRANSACTION;"
-    ]
+    f.write(f"DROP TABLE IF EXISTS {name};\n")
+    f.write(f"CREATE TABLE {name} ({cols_sql});\n")
 
-    # Удаление существующих таблиц
-    for table_name in TABLES_CONFIG.keys():
-        sql_lines.append(f"DROP TABLE IF EXISTS {table_name};")
+    for i in range(0, len(rows), BATCH):
+        chunk = rows[i:i + BATCH]
+        values = ",\n".join("(" + ", ".join(r) + ")" for r in chunk)
+        f.write(f"INSERT INTO {name} ({col_names}) VALUES\n{values};\n")
 
-    # Создание таблиц и наполнение данными
-    for table_name, config in TABLES_CONFIG.items():
-        sql_lines.append(config["create_sql"].strip())
+    f.write("\n")
 
-        # Поиск файла данных (поддерживает .csv, .txt и т.д.)
-        base_filename = os.path.splitext(config["filename"])[0]
-        file_path = find_file(DATASET_DIR, base_filename)
 
-        if file_path and os.path.exists(file_path):
-            # Простейший парсер строк разделенных запятыми или табуляцией
-            # Определяем разделитель по расширению или первой строке
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
+def parse_movies():
+    rows = []
+    file_path = os.path.join(DATASET_DIR, "movies.csv")
+    with open(file_path, encoding="utf-8", newline="") as f:
+        for r in csv.DictReader(f):
+            title = r["title"].strip()
+            year = "NULL"
+            m = re.search(r"\((\d{4})(?:[–-]\d{4})?\)$", title)
+            if m:
+                year = m.group(1)
+                title = title[:m.start()].strip()
+            rows.append((
+                val(int(r["movieId"])),
+                esc(title),
+                year,
+                esc(r["genres"]),
+            ))
+    return rows
 
-            if lines:
-                # Пробуем определить разделитель (, или \t или ;)
-                sample = lines[0]
-                delimiter = "\t" if "\t" in sample else (";" if ";" in sample else ",")
 
-                # Пропускаем заголовок, если он есть (проверяем первое поле на числовой id)
-                start_idx = 0
-                first_parts = lines[0].strip().split(delimiter)
-                if not first_parts[0].isdigit():
-                    start_idx = 1
+def parse_ratings():
+    rows = []
+    file_path = os.path.join(DATASET_DIR, "ratings.csv")
+    with open(file_path, encoding="utf-8", newline="") as f:
+        for i, r in enumerate(csv.DictReader(f), start=1):
+            rows.append((
+                val(i),
+                val(int(r["userId"])),
+                val(int(r["movieId"])),
+                val(float(r["rating"])),
+                val(int(r["timestamp"])),
+            ))
+    return rows
 
-                for line in lines[start_idx:]:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    parts = line.split(delimiter)
-                    # Очищаем кавычки по краям значений, если они есть
-                    cleaned_parts = [p.strip().strip('"\'') for p in parts]
 
-                    # Формируем INSERT
-                    values_sql = ", ".join([escape_sql(p if p != "" else None) for p in cleaned_parts])
-                    sql_lines.append(f"INSERT INTO {table_name} VALUES ({values_sql});")
+def parse_tags():
+    rows = []
+    file_path = os.path.join(DATASET_DIR, "tags.csv")
+    with open(file_path, encoding="utf-8", newline="") as f:
+        for i, r in enumerate(csv.DictReader(f), start=1):
+            rows.append((
+                val(i),
+                val(int(r["userId"])),
+                val(int(r["movieId"])),
+                esc(r["tag"]),
+                val(int(r["timestamp"])),
+            ))
+    return rows
 
-    sql_lines.append("COMMIT;")
-    sql_lines.append("PRAGMA foreign_keys = ON;")
 
-    with open(OUTPUT_SQL, "w", encoding="utf-8") as f:
-        f.write("\n".join(sql_lines) + "\n")
+def parse_users():
+    rows = []
+    file_path = os.path.join(DATASET_DIR, "users.txt")
+    with open(file_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            uid, name, email, gender, register_date, occupation = line.split("|")
+            rows.append((
+                val(int(uid)),
+                esc(name),
+                esc(email),
+                esc(gender),
+                esc(register_date),
+                esc(occupation),
+            ))
+    return rows
 
-    elapsed = time.time() - start_time
-    print(f"SQL-скрипт успешно сгенерирован за {elapsed:.3f} сек.")
+
+def main():
+    with open(OUT, "w", encoding="utf-8", newline="\n") as f:
+        f.write("BEGIN TRANSACTION;\n\n")
+
+        write_table(f, "movies", [
+            ("id", "INTEGER PRIMARY KEY"),
+            ("title", "TEXT"),
+            ("year", "INTEGER"),
+            ("genres", "TEXT"),
+        ], parse_movies())
+
+        write_table(f, "ratings", [
+            ("id", "INTEGER PRIMARY KEY"),
+            ("user_id", "INTEGER"),
+            ("movie_id", "INTEGER"),
+            ("rating", "REAL"),
+            ("timestamp", "INTEGER"),
+        ], parse_ratings())
+
+        write_table(f, "tags", [
+            ("id", "INTEGER PRIMARY KEY"),
+            ("user_id", "INTEGER"),
+            ("movie_id", "INTEGER"),
+            ("tag", "TEXT"),
+            ("timestamp", "INTEGER"),
+        ], parse_tags())
+
+        write_table(f, "users", [
+            ("id", "INTEGER PRIMARY KEY"),
+            ("name", "TEXT"),
+            ("email", "TEXT"),
+            ("gender", "TEXT"),
+            ("register_date", "TEXT"),
+            ("occupation", "TEXT"),
+        ], parse_users())
+
+        f.write("COMMIT;\n")
 
 
 if __name__ == "__main__":
-    generate_sql()
+    main()
